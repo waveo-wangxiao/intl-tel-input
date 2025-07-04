@@ -303,6 +303,28 @@ module.exports = function(grunt) {
 
 
     /**************
+     * Generate reactNativeWithUtils.tsx
+     **************/
+    reactNativeWithUtils: {
+      options: {
+        patterns: [
+          {
+            match: /\/\/ Import the core library data and utilities\nimport allCountries from \"\.\/data\"\;/,
+            replacement: '//* THIS FILE IS AUTO-GENERATED. DO NOT EDIT.\n// Import the core library data and utilities with utils\nimport allCountries from "./data";\nimport utils from "./utils-compiled";'
+          },
+          {
+            match: /\/\/ make this available as a named export, so react-native users can access globals\nexport \{ allCountries \}\;/,
+            replacement: '// make this available as a named export, so react-native users can access globals\nexport { allCountries, utils };'
+          }
+        ]
+      },
+      files: {
+        'react-native/src/intl-tel-input/reactNativeWithUtils.tsx': 'react-native/src/intl-tel-input/react-native.tsx',
+      }
+    },
+
+
+    /**************
      * Generate vue/src/IntlTelInputWithUtils.tsx
      **************/
     vueWithUtils: {

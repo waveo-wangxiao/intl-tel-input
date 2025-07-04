@@ -27,6 +27,7 @@
     "@babel/plugin-transform-modules-commonjs": "^7.25.7",
     "@testing-library/jest-dom": "^6.4.6",
     "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^24.0.10",
     "@types/react": "^18.2.74",
     "@types/react-dom": "^18.2.24",
     "@typescript-eslint/eslint-plugin": "^8.1.0",
@@ -34,7 +35,8 @@
     "@vitejs/plugin-vue": "^5.1.2",
     "babel-plugin-add-module-exports": "^1.0.4",
     "cspell": "^8.6.1",
-    "esbuild": "^0.23.0",
+    "esbuild": "^0.23.1",
+    "esbuild-node-externals": "^1.18.0",
     "eslint": "^8.57.0",
     "eslint-import-resolver-typescript": "^3.6.1",
     "eslint-plugin-import": "^2.29.1",
@@ -70,9 +72,18 @@
     "vite": "^5.4.2",
     "vue": "^3.4.38"
   },
+  "peerDependencies": {
+    "react-native": ">=0.60.0"
+  },
+  "peerDependenciesMeta": {
+    "react-native": {
+      "optional": true
+    }
+  },
   "files": [
     "build/*",
     "react/build/*",
+    "react-native/build/*",
     "vue/build/*",
     "CHANGELOG.md",
     "LICENSE",
@@ -100,6 +111,7 @@
     "build:css": "grunt css",
     "build:img": "grunt img",
     "build:react": "grunt react",
+    "build:react-native": "grunt react-native",
     "build:vue": "grunt vue",
     "vue:demo": "vite --config vue/demo/validation/vite.config.js",
     "server": "grunt jasmine:interactive"
@@ -134,6 +146,16 @@
     "./vueWithUtils": {
       "import": "./vue/build/IntlTelInputWithUtils.mjs"
     },
+    "./react-native": {
+      "types": "./react-native/build/IntlTelInput.d.ts",
+      "require": "./react-native/build/IntlTelInput.cjs",
+      "default": "./react-native/build/IntlTelInput.js"
+    },
+    "./reactNativeWithUtils": {
+      "types": "./react-native/build/IntlTelInput.d.ts",
+      "require": "./react-native/build/IntlTelInputWithUtils.cjs",
+      "default": "./react-native/build/IntlTelInputWithUtils.js"
+    },
     "./i18n": {
       "types": "./build/js/intlTelInput.d.ts",
       "default": "./build/js/i18n/index.js"
@@ -152,6 +174,9 @@
       ],
       "react": [
         "react/build/IntlTelInput.d.ts"
+      ],
+      "react-native": [
+        "react-native/build/IntlTelInput.d.ts"
       ]
     }
   }
