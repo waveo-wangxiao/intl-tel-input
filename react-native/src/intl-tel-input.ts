@@ -176,6 +176,7 @@ export class Iti {
   private dialCodes: { [key: string]: boolean };
   private maxCoreNumberLength: number | null;
   private defaultCountry: string;
+  private hadInitialPlaceholder: boolean;
 
   private resolveAutoCountryPromise: (value?: unknown) => void;
   private rejectAutoCountryPromise: (reason?: unknown) => void;
@@ -187,6 +188,9 @@ export class Iti {
 
     //* Process specified options / defaults.
     this.options = Object.assign({}, defaults, customOptions);
+
+    //* For React Native, we assume no initial placeholder (can be overridden by component)
+    this.hadInitialPlaceholder = false;
 
     //* these promises get resolved when their individual requests complete
     //* this way the dev can do something like iti.promise.then(...) to know when all requests are complete.
@@ -210,6 +214,9 @@ export class Iti {
 
     //* Process all the data: onlyCountries, excludeCountries, countryOrder etc.
     this._processCountryData();
+
+    //* Set the initial state of the selected country.
+    this._setInitialState();
 
     //* Utils script, and auto country.
     this._initRequests();
@@ -505,6 +512,11 @@ export class Iti {
     }
   }
 
+  //* Get the current placeholder and trigger update (for React Native component).
+  updateAndGetPlaceholder(): string {
+    return this._updatePlaceholder();
+  }
+
   //********************
   //*  PUBLIC METHODS
   //********************
@@ -559,6 +571,22 @@ export class Iti {
     return this.options;
   }
 
+  //* Get the current placeholder (using the same logic as the main implementation).
+  getPlaceholder(): string {
+    return this._updatePlaceholder();
+  }
+
+  //* Set whether the input had an initial placeholder (for React Native component).
+  setHadInitialPlaceholder(hadPlaceholder: boolean): void {
+    this.hadInitialPlaceholder = hadPlaceholder;
+  }
+
+  //* Set the placeholder number type
+  setPlaceholderNumberType(type: NumberType): void {
+    this.options.placeholderNumberType = type;
+    //* Note: React Native component should call updatePlaceholder after this
+  }
+
   //* Get the validation error.
   getValidationError(): number {
     if (intlTelInput.utils) {
@@ -611,48 +639,207 @@ export class Iti {
     this.currentInputValue = value;
   }
 
+  //* Set the input value and update the country (like main implementation)
+  setNumber(number: string): void {
+    //* We must update the country first, which updates this.selectedCountryData, which is used for
+    //* formatting the number before displaying it.
+    this._updateCountryFromNumber(number);
+    this.currentInputValue = this._beforeSetNumber(number);
+    //* Note: no need to trigger events here as React Native component handles this
+  }
+
+  //* Format number as you type (exposed for React Native component)
+  formatNumberAsYouType(): string {
+    return this._formatNumberAsYouType();
+  }
+
+  //* Update country from number (exposed for React Native component)
+  updateCountryFromNumber(fullNumber: string): boolean {
+    return this._updateCountryFromNumber(fullNumber);
+  }
+
+  //* Destroy the instance (cleanup)
+  destroy(): void {
+    //* For React Native, we don't have DOM elements to clean up
+    //* Just reset the instance state
+    this.currentInputValue = "";
+    this.selectedCountryData = {};
+  }
+
   //* Helper method to get full number
   private _getFullNumber(): string {
-    return this.currentInputValue;
+    const val = this.currentInputValue.trim();
+    const { dialCode } = this.selectedCountryData;
+    let prefix: string | undefined;
+    let numericVal = getNumeric(val);
+
+    if (this.options.separateDialCode && dialCode && numericVal) {
+      //* When separateDialCode is enabled, we need to add the dial code
+      if (numericVal.charAt(0) !== "1" || dialCode !== "1") {
+        prefix = `+${dialCode}`;
+      }
+    } else if (val.charAt(0) !== "+") {
+      //* If no plus, add it
+      prefix = "+";
+    }
+
+    return prefix ? prefix + numericVal : val;
+  }
+
+  //* Process number before setting (removes non-numeric chars in strict mode)
+  private _beforeSetNumber(fullNumber: string): string {
+    let number = fullNumber;
+    if (this.options.separateDialCode) {
+      let dialCode = this._getDialCode(number);
+      //* If there is a valid dial code
+      if (dialCode) {
+        //* Remove the dial code from the number
+        const start = number[dialCode.length] === " " ? dialCode.length + 1 : dialCode.length;
+        number = number.substring(start);
+      }
+    }
+    if (this.options.strictMode) {
+      const regex = /[^+0-9]/g;
+      number = number.replace(regex, "");
+    }
+    return number;
+  }
+
+  //* Extract dial code from number
+  private _getDialCode(number: string, includeAreaCode?: boolean): string {
+    let dialCode = "";
+    //* Only interested in international numbers (starting with a plus)
+    if (number.charAt(0) === "+") {
+      let numericChars = "";
+      //* Only interested in numeric chars that follow the plus (ignore any whitespace etc)
+      for (let i = 1; i < number.length; i++) {
+        const c = number.charAt(i);
+        if (/[0-9]/.test(c)) {
+          numericChars += c;
+          //* If we have enough characters to determine the dial code
+          if ((includeAreaCode && numericChars.length <= this.dialCodeMaxLen) ||
+              (!includeAreaCode && this.dialCodes[numericChars])) {
+            dialCode = numericChars;
+          }
+          //* If we're just looking for the dial code, we can stop as soon as we find an invalid one
+          if (!includeAreaCode && numericChars.length > this.dialCodeMaxLen) {
+            break;
+          }
+        }
+      }
+    }
+    return dialCode;
+  }
+
+  //* Get country from number
+  private _getCountryFromNumber(fullNumber: string): string | null {
+    const plusIndex = fullNumber.indexOf("+");
+    //* If it contains a plus, discard any chars before it e.g. accidental space char.
+    const number = plusIndex !== -1 ? fullNumber.substring(plusIndex) : fullNumber;
+    const dialCode = this._getDialCode(number, true);
+
+    if (dialCode) {
+      const countryCodes = this.dialCodeToIso2Map[dialCode];
+      //* If there's only one country for this dial code, return it
+      if (countryCodes && countryCodes.length === 1) {
+        return countryCodes[0];
+      }
+      //* If there are multiple countries, we need to check area codes
+      if (countryCodes && countryCodes.length > 1) {
+        //* Check for regionless NANP numbers
+        if (isRegionlessNanp(number)) {
+          return "us"; //* Default to US for regionless NANP
+        }
+        //* For now, return the first country (this could be improved with area code logic)
+        return countryCodes[0];
+      }
+    }
+    return null;
+  }
+
+  //* Update country from number
+  private _updateCountryFromNumber(fullNumber: string): boolean {
+    const iso2 = this._getCountryFromNumber(fullNumber);
+    if (iso2 !== null) {
+      return this._setCountry(iso2);
+    }
+    return false;
+  }
+
+  //* Format number as you type
+  private _formatNumberAsYouType(): string {
+    const val = this._getFullNumber();
+    const result = intlTelInput.utils
+      ? intlTelInput.utils.formatNumberAsYouType(val, this.selectedCountryData.iso2)
+      : val;
+    return this._beforeSetNumber(result);
+  }
+
+  //* Update the input placeholder to an example number from the currently selected country.
+  private _updatePlaceholder(): string {
+    const {
+      autoPlaceholder,
+      placeholderNumberType,
+      nationalMode,
+      customPlaceholder,
+    } = this.options;
+
+    const shouldSetPlaceholder =
+      autoPlaceholder === "aggressive" ||
+      (!this.hadInitialPlaceholder && autoPlaceholder === "polite");
+
+    if (intlTelInput.utils && shouldSetPlaceholder) {
+      const numberType = intlTelInput.utils.numberType[placeholderNumberType];
+      //* Note: Must set placeholder to empty string if no country selected (globe icon showing).
+      let placeholder = this.selectedCountryData.iso2
+        ? intlTelInput.utils.getExampleNumber(
+            this.selectedCountryData.iso2,
+            nationalMode,
+            numberType,
+          )
+        : "";
+
+      placeholder = this._beforeSetNumber(placeholder);
+      if (typeof customPlaceholder === "function") {
+        placeholder = customPlaceholder(placeholder, this.selectedCountryData);
+      }
+      return placeholder;
+    }
+    return "";
   }
 }
 
 //* Load the utils script.
-const attachUtils = (
+const attachUtils = async (
   source: UtilsLoader,
-): Promise<unknown> | null => {
+): Promise<unknown> => {
   if (!source || typeof source !== "function") {
     return Promise.reject(new TypeError("The loader function passed to attachUtils must be a function."));
   }
 
-  let loadCall;
-  if (typeof source === "function") {
-    try {
-      loadCall = Promise.resolve(source());
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  } else {
-    return Promise.reject(new TypeError("The loader function passed to attachUtils must be a function."));
+  let loadCall: Promise<{default: ItiUtils}>;
+  try {
+    loadCall = Promise.resolve(source());
+  } catch (error) {
+    return Promise.reject(error);
   }
 
-  return loadCall
-    .then((module) => {
-      const utils = module?.default;
-      if (!utils || typeof utils !== "object") {
-        throw new TypeError("The loader function passed to attachUtils did not resolve to a module object with utils as its default export.");
-      }
+  try {
+    const module = await loadCall;
+    const utils = module?.default;
+    if (!utils || typeof utils !== "object") {
+      throw new TypeError("The loader function passed to attachUtils did not resolve to a module object with utils as its default export.");
+    }
 
-      //* Set the utils object on the global intlTelInput object.
-      intlTelInput.utils = utils;
+    //* Set the utils object on the global intlTelInput object.
+    intlTelInput.utils = utils;
 
-      //* Resolve all instances' utils promises.
-      // In React Native, we don't have multiple instances like DOM version
-      return utils;
-    })
-    .catch((error) => {
-      throw error;
-    });
+    //* Resolve all instances' utils promises.
+    // In React Native, we don't have multiple instances like DOM version
+    return utils;
+  } catch (error: unknown) {
+    throw error;
+  }
 };
 
 //* Convenience wrapper.

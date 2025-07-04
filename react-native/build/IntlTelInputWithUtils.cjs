@@ -9518,12 +9518,41 @@ var defaults2 = {
   //* The number type to enforce during validation.
   validationNumberTypes: ["MOBILE"]
 };
+var regionlessNanpNumbers2 = [
+  "800",
+  "822",
+  "833",
+  "844",
+  "855",
+  "866",
+  "877",
+  "880",
+  "881",
+  "882",
+  "883",
+  "884",
+  "885",
+  "886",
+  "887",
+  "888",
+  "889"
+];
+var getNumeric2 = (s) => s.replace(/\D/g, "");
+var isRegionlessNanp2 = (number) => {
+  const numeric = getNumeric2(number);
+  if (numeric.charAt(0) === "1") {
+    const areaCode = numeric.substring(1, 4);
+    return regionlessNanpNumbers2.includes(areaCode);
+  }
+  return false;
+};
 var Iti2 = class {
   constructor(customOptions = {}) {
     //* Current input value - to be set by React Native component
     this.currentInputValue = "";
     this.id = id2++;
     this.options = Object.assign({}, defaults2, customOptions);
+    this.hadInitialPlaceholder = false;
     const autoCountryPromise = new Promise((resolve, reject) => {
       this.resolveAutoCountryPromise = resolve;
       this.rejectAutoCountryPromise = reject;
@@ -9539,6 +9568,7 @@ var Iti2 = class {
     this.maxCoreNumberLength = null;
     this.defaultCountry = "";
     this._processCountryData();
+    this._setInitialState();
     this._initRequests();
   }
   //********************
@@ -9750,6 +9780,10 @@ var Iti2 = class {
       this.rejectUtilsScriptPromise();
     }
   }
+  //* Get the current placeholder and trigger update (for React Native component).
+  updateAndGetPlaceholder() {
+    return this._updatePlaceholder();
+  }
   //********************
   //*  PUBLIC METHODS
   //********************
@@ -9797,6 +9831,18 @@ var Iti2 = class {
   getOptions() {
     return this.options;
   }
+  //* Get the current placeholder (using the same logic as the main implementation).
+  getPlaceholder() {
+    return this._updatePlaceholder();
+  }
+  //* Set whether the input had an initial placeholder (for React Native component).
+  setHadInitialPlaceholder(hadPlaceholder) {
+    this.hadInitialPlaceholder = hadPlaceholder;
+  }
+  //* Set the placeholder number type
+  setPlaceholderNumberType(type) {
+    this.options.placeholderNumberType = type;
+  }
   //* Get the validation error.
   getValidationError() {
     if (intlTelInput2.utils) {
@@ -9834,35 +9880,154 @@ var Iti2 = class {
   setInputValue(value) {
     this.currentInputValue = value;
   }
+  //* Set the input value and update the country (like main implementation)
+  setNumber(number) {
+    this._updateCountryFromNumber(number);
+    this.currentInputValue = this._beforeSetNumber(number);
+  }
+  //* Format number as you type (exposed for React Native component)
+  formatNumberAsYouType() {
+    return this._formatNumberAsYouType();
+  }
+  //* Update country from number (exposed for React Native component)
+  updateCountryFromNumber(fullNumber) {
+    return this._updateCountryFromNumber(fullNumber);
+  }
+  //* Destroy the instance (cleanup)
+  destroy() {
+    this.currentInputValue = "";
+    this.selectedCountryData = {};
+  }
   //* Helper method to get full number
   _getFullNumber() {
-    return this.currentInputValue;
+    const val = this.currentInputValue.trim();
+    const { dialCode } = this.selectedCountryData;
+    let prefix;
+    let numericVal = getNumeric2(val);
+    if (this.options.separateDialCode && dialCode && numericVal) {
+      if (numericVal.charAt(0) !== "1" || dialCode !== "1") {
+        prefix = `+${dialCode}`;
+      }
+    } else if (val.charAt(0) !== "+") {
+      prefix = "+";
+    }
+    return prefix ? prefix + numericVal : val;
+  }
+  //* Process number before setting (removes non-numeric chars in strict mode)
+  _beforeSetNumber(fullNumber) {
+    let number = fullNumber;
+    if (this.options.separateDialCode) {
+      let dialCode = this._getDialCode(number);
+      if (dialCode) {
+        const start = number[dialCode.length] === " " ? dialCode.length + 1 : dialCode.length;
+        number = number.substring(start);
+      }
+    }
+    if (this.options.strictMode) {
+      const regex = /[^+0-9]/g;
+      number = number.replace(regex, "");
+    }
+    return number;
+  }
+  //* Extract dial code from number
+  _getDialCode(number, includeAreaCode) {
+    let dialCode = "";
+    if (number.charAt(0) === "+") {
+      let numericChars = "";
+      for (let i = 1; i < number.length; i++) {
+        const c = number.charAt(i);
+        if (/[0-9]/.test(c)) {
+          numericChars += c;
+          if (includeAreaCode && numericChars.length <= this.dialCodeMaxLen || !includeAreaCode && this.dialCodes[numericChars]) {
+            dialCode = numericChars;
+          }
+          if (!includeAreaCode && numericChars.length > this.dialCodeMaxLen) {
+            break;
+          }
+        }
+      }
+    }
+    return dialCode;
+  }
+  //* Get country from number
+  _getCountryFromNumber(fullNumber) {
+    const plusIndex = fullNumber.indexOf("+");
+    const number = plusIndex !== -1 ? fullNumber.substring(plusIndex) : fullNumber;
+    const dialCode = this._getDialCode(number, true);
+    if (dialCode) {
+      const countryCodes = this.dialCodeToIso2Map[dialCode];
+      if (countryCodes && countryCodes.length === 1) {
+        return countryCodes[0];
+      }
+      if (countryCodes && countryCodes.length > 1) {
+        if (isRegionlessNanp2(number)) {
+          return "us";
+        }
+        return countryCodes[0];
+      }
+    }
+    return null;
+  }
+  //* Update country from number
+  _updateCountryFromNumber(fullNumber) {
+    const iso2 = this._getCountryFromNumber(fullNumber);
+    if (iso2 !== null) {
+      return this._setCountry(iso2);
+    }
+    return false;
+  }
+  //* Format number as you type
+  _formatNumberAsYouType() {
+    const val = this._getFullNumber();
+    const result = intlTelInput2.utils ? intlTelInput2.utils.formatNumberAsYouType(val, this.selectedCountryData.iso2) : val;
+    return this._beforeSetNumber(result);
+  }
+  //* Update the input placeholder to an example number from the currently selected country.
+  _updatePlaceholder() {
+    const {
+      autoPlaceholder,
+      placeholderNumberType,
+      nationalMode,
+      customPlaceholder
+    } = this.options;
+    const shouldSetPlaceholder = autoPlaceholder === "aggressive" || !this.hadInitialPlaceholder && autoPlaceholder === "polite";
+    if (intlTelInput2.utils && shouldSetPlaceholder) {
+      const numberType = intlTelInput2.utils.numberType[placeholderNumberType];
+      let placeholder = this.selectedCountryData.iso2 ? intlTelInput2.utils.getExampleNumber(
+        this.selectedCountryData.iso2,
+        nationalMode,
+        numberType
+      ) : "";
+      placeholder = this._beforeSetNumber(placeholder);
+      if (typeof customPlaceholder === "function") {
+        placeholder = customPlaceholder(placeholder, this.selectedCountryData);
+      }
+      return placeholder;
+    }
+    return "";
   }
 };
-var attachUtils2 = (source) => {
+var attachUtils2 = async (source) => {
   if (!source || typeof source !== "function") {
     return Promise.reject(new TypeError("The loader function passed to attachUtils must be a function."));
   }
   let loadCall;
-  if (typeof source === "function") {
-    try {
-      loadCall = Promise.resolve(source());
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  } else {
-    return Promise.reject(new TypeError("The loader function passed to attachUtils must be a function."));
+  try {
+    loadCall = Promise.resolve(source());
+  } catch (error) {
+    return Promise.reject(error);
   }
-  return loadCall.then((module2) => {
+  try {
+    const module2 = await loadCall;
     const utils2 = module2?.default;
     if (!utils2 || typeof utils2 !== "object") {
       throw new TypeError("The loader function passed to attachUtils did not resolve to a module object with utils as its default export.");
     }
     intlTelInput2.utils = utils2;
     return utils2;
-  }).catch((error) => {
+  } catch (error) {
     throw error;
-  });
+  }
 };
 var intlTelInput2 = Object.assign(
   {},
@@ -9880,6 +10045,13 @@ var intlTelInput2 = Object.assign(
 // react-native/src/intl-tel-input/reactNativeWithUtils.tsx
 var import_react = __toESM(require("react"));
 var import_react_native = require("react-native");
+var getCountryFlag = (iso2) => {
+  if (!iso2 || iso2.length !== 2) return "\u{1F3F3}\uFE0F";
+  const codePoints = iso2.toUpperCase().split("").map(
+    (char) => 127462 + char.charCodeAt(0) - "A".charCodeAt(0)
+  );
+  return String.fromCodePoint(...codePoints);
+};
 var IntlTelInput = (0, import_react.forwardRef)(({
   initialValue = "",
   onChangeNumber = () => {
@@ -9904,23 +10076,60 @@ var IntlTelInput = (0, import_react.forwardRef)(({
   const [isDropdownVisible, setIsDropdownVisible] = (0, import_react.useState)(false);
   const [filteredCountries, setFilteredCountries] = (0, import_react.useState)([]);
   const [searchQuery, setSearchQuery] = (0, import_react.useState)("");
+  const [placeholder, setPlaceholder] = (0, import_react.useState)("");
   const textInputRef = (0, import_react.useRef)(null);
   const itiInstanceRef = (0, import_react.useRef)(null);
   const [processedCountries, setProcessedCountries] = (0, import_react.useState)([]);
+  const getSearchPlaceholder = (0, import_react.useCallback)(() => {
+    if (itiInstanceRef.current) {
+      const options = itiInstanceRef.current.getOptions();
+      return options.i18n?.searchPlaceholder || "Search countries...";
+    }
+    return "Search countries...";
+  }, []);
+  const updatePlaceholder = (0, import_react.useCallback)(() => {
+    if (itiInstanceRef.current) {
+      const hasInitialPlaceholder = Boolean(inputProps?.placeholder);
+      itiInstanceRef.current.setHadInitialPlaceholder(hasInitialPlaceholder);
+      const placeholderText = itiInstanceRef.current.getPlaceholder();
+      setPlaceholder(placeholderText || inputProps?.placeholder || "Phone number");
+    } else {
+      setPlaceholder(inputProps?.placeholder || "Phone number");
+    }
+  }, [inputProps?.placeholder]);
   (0, import_react.useEffect)(() => {
     if (!itiInstanceRef.current) {
       itiInstanceRef.current = new Iti2(initOptions);
-      setProcessedCountries(itiInstanceRef.current.getCountries());
+      const countries = itiInstanceRef.current.getCountries();
+      setProcessedCountries(countries);
       const selectedCountryData = itiInstanceRef.current.getSelectedCountryData();
       if (selectedCountryData.iso2) {
-        const country = itiInstanceRef.current.getCountries().find((c) => c.iso2 === selectedCountryData.iso2);
+        const country = countries.find((c) => c.iso2 === selectedCountryData.iso2);
         if (country) {
           setSelectedCountry(country);
           onChangeCountry(country.iso2);
         }
+      } else {
+        const firstCountry = countries[0];
+        if (firstCountry) {
+          setSelectedCountry(firstCountry);
+          onChangeCountry(firstCountry.iso2);
+          itiInstanceRef.current.setCountry(firstCountry.iso2);
+        }
       }
     }
   }, [initOptions, onChangeCountry]);
+  (0, import_react.useEffect)(() => {
+    updatePlaceholder();
+  }, [selectedCountry, updatePlaceholder]);
+  (0, import_react.useEffect)(() => {
+    if (itiInstanceRef.current) {
+      itiInstanceRef.current.promise.then(() => {
+        updatePlaceholder();
+      }).catch(() => {
+      });
+    }
+  }, [updatePlaceholder]);
   (0, import_react.useEffect)(() => {
     if (searchQuery.trim() === "") {
       setFilteredCountries(processedCountries);
@@ -10014,7 +10223,7 @@ var IntlTelInput = (0, import_react.forwardRef)(({
       style: [styles.countryItem, dropdownStyle],
       onPress: () => handleCountrySelect(item)
     },
-    initOptions.showFlags !== false && /* @__PURE__ */ import_react.default.createElement(import_react_native.Text, { style: [styles.flag, flagStyle] }, "\u{1F3F3}\uFE0F"),
+    initOptions.showFlags !== false && /* @__PURE__ */ import_react.default.createElement(import_react_native.Text, { style: [styles.flag, flagStyle] }, getCountryFlag(item.iso2)),
     /* @__PURE__ */ import_react.default.createElement(import_react_native.Text, { style: [styles.countryName, textStyle] }, item.name),
     /* @__PURE__ */ import_react.default.createElement(import_react_native.Text, { style: [styles.dialCode, textStyle] }, "+", item.dialCode)
   );
@@ -10025,7 +10234,7 @@ var IntlTelInput = (0, import_react.forwardRef)(({
       onPress: () => setIsDropdownVisible(true),
       disabled
     },
-    initOptions.showFlags !== false && selectedCountry && /* @__PURE__ */ import_react.default.createElement(import_react_native.Text, { style: [styles.selectedFlag, flagStyle] }, "\u{1F3F3}\uFE0F"),
+    initOptions.showFlags !== false && selectedCountry && /* @__PURE__ */ import_react.default.createElement(import_react_native.Text, { style: [styles.selectedFlag, flagStyle] }, getCountryFlag(selectedCountry.iso2)),
     initOptions.separateDialCode && selectedCountry && /* @__PURE__ */ import_react.default.createElement(import_react_native.Text, { style: [styles.selectedDialCode, textStyle] }, "+", selectedCountry.dialCode),
     /* @__PURE__ */ import_react.default.createElement(import_react_native.Text, { style: styles.dropdownArrow }, "\u25BC")
   ), /* @__PURE__ */ import_react.default.createElement(
@@ -10035,7 +10244,7 @@ var IntlTelInput = (0, import_react.forwardRef)(({
       style: [styles.textInput, textStyle],
       value: phoneNumber,
       onChangeText: handlePhoneNumberChange,
-      placeholder: "Phone number",
+      placeholder: placeholder || "Phone number",
       keyboardType: "phone-pad",
       editable: !disabled,
       ...inputProps
@@ -10060,7 +10269,7 @@ var IntlTelInput = (0, import_react.forwardRef)(({
         style: styles.searchInput,
         value: searchQuery,
         onChangeText: setSearchQuery,
-        placeholder: "Search countries...",
+        placeholder: getSearchPlaceholder(),
         autoFocus: true
       }
     ), /* @__PURE__ */ import_react.default.createElement(

@@ -18,6 +18,17 @@ import {
 // make this available as a named export, so react-native users can access globals like intlTelInput.utils
 export { intlTelInput };
 
+// Convert ISO2 country code to flag emoji
+const getCountryFlag = (iso2: string): string => {
+  if (!iso2 || iso2.length !== 2) return "🏳️";
+
+  // Convert ISO2 to flag emoji using Unicode regional indicator symbols
+  const codePoints = iso2.toUpperCase().split('').map(char =>
+    0x1F1E6 + char.charCodeAt(0) - 'A'.charCodeAt(0)
+  );
+  return String.fromCodePoint(...codePoints);
+};
+
 type ItiProps = {
   initialValue?: string;
   onChangeNumber?: (number: string) => void;
@@ -64,10 +75,35 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
   const [isDropdownVisible, setIsDropdownVisible] = useState(false);
   const [filteredCountries, setFilteredCountries] = useState<Country[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [placeholder, setPlaceholder] = useState("");
 
   const textInputRef = useRef<TextInput>(null);
   const itiInstanceRef = useRef<Iti | null>(null);
   const [processedCountries, setProcessedCountries] = useState<Country[]>([]);
+
+  // Get search placeholder from i18n options
+  const getSearchPlaceholder = useCallback(() => {
+    if (itiInstanceRef.current) {
+      const options = itiInstanceRef.current.getOptions();
+      return options.i18n?.searchPlaceholder || "Search countries...";
+    }
+    return "Search countries...";
+  }, []);
+
+  // Update placeholder when country changes
+  const updatePlaceholder = useCallback(() => {
+    if (itiInstanceRef.current) {
+      // Set whether there was an initial placeholder (for polite mode)
+      const hasInitialPlaceholder = Boolean(inputProps?.placeholder);
+      itiInstanceRef.current.setHadInitialPlaceholder(hasInitialPlaceholder);
+
+      // Get the placeholder using the same logic as the main implementation
+      const placeholderText = itiInstanceRef.current.getPlaceholder();
+      setPlaceholder(placeholderText || inputProps?.placeholder || "Phone number");
+    } else {
+      setPlaceholder(inputProps?.placeholder || "Phone number");
+    }
+  }, [inputProps?.placeholder]);
 
   // Initialize Iti instance and get processed countries from it
   useEffect(() => {
@@ -75,19 +111,44 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
       itiInstanceRef.current = new Iti(initOptions);
 
       // Get processed countries from Iti instance
-      setProcessedCountries(itiInstanceRef.current.getCountries());
+      const countries = itiInstanceRef.current.getCountries();
+      setProcessedCountries(countries);
 
       // Get initial selected country from Iti instance
       const selectedCountryData = itiInstanceRef.current.getSelectedCountryData();
       if (selectedCountryData.iso2) {
-        const country = itiInstanceRef.current.getCountries().find(c => c.iso2 === selectedCountryData.iso2);
+        const country = countries.find(c => c.iso2 === selectedCountryData.iso2);
         if (country) {
           setSelectedCountry(country);
           onChangeCountry(country.iso2);
         }
+      } else {
+        // If no initial country is set, use the first country from the processed list
+        const firstCountry = countries[0];
+        if (firstCountry) {
+          setSelectedCountry(firstCountry);
+          onChangeCountry(firstCountry.iso2);
+          itiInstanceRef.current.setCountry(firstCountry.iso2);
+        }
       }
     }
   }, [initOptions, onChangeCountry]);
+
+  // Update placeholder when selected country changes
+  useEffect(() => {
+    updatePlaceholder();
+  }, [selectedCountry, updatePlaceholder]);
+
+  // Update placeholder when utils are loaded
+  useEffect(() => {
+    if (itiInstanceRef.current) {
+      itiInstanceRef.current.promise.then(() => {
+        updatePlaceholder();
+      }).catch(() => {
+        // Utils failed to load, keep current placeholder
+      });
+    }
+  }, [updatePlaceholder]);
 
   // Filter countries for search
   useEffect(() => {
@@ -207,8 +268,7 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
     >
       {(initOptions.showFlags !== false) && (
         <Text style={[styles.flag, flagStyle]}>
-          {/* Flag emoji would go here - simplified for now */}
-          🏳️
+          {getCountryFlag(item.iso2)}
         </Text>
       )}
       <Text style={[styles.countryName, textStyle]}>{item.name}</Text>
@@ -226,7 +286,9 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
             disabled={disabled}
           >
             {(initOptions.showFlags !== false) && selectedCountry && (
-              <Text style={[styles.selectedFlag, flagStyle]}>🏳️</Text>
+              <Text style={[styles.selectedFlag, flagStyle]}>
+                {getCountryFlag(selectedCountry.iso2)}
+              </Text>
             )}
             {initOptions.separateDialCode && selectedCountry && (
               <Text style={[styles.selectedDialCode, textStyle]}>
@@ -242,7 +304,7 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
           style={[styles.textInput, textStyle]}
           value={phoneNumber}
           onChangeText={handlePhoneNumberChange}
-          placeholder="Phone number"
+          placeholder={placeholder || "Phone number"}
           keyboardType="phone-pad"
           editable={!disabled}
           {...inputProps}
@@ -269,7 +331,7 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
               style={styles.searchInput}
               value={searchQuery}
               onChangeText={setSearchQuery}
-              placeholder="Search countries..."
+              placeholder={getSearchPlaceholder()}
               autoFocus
             />
           )}

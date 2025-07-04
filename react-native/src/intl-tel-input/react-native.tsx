@@ -17,6 +17,17 @@ import {
 // make this available as a named export, so react-native users can access globals like intlTelInput.utils
 export { intlTelInput };
 
+// Convert ISO2 country code to flag emoji
+const getCountryFlag = (iso2: string): string => {
+  if (!iso2 || iso2.length !== 2) return "🏳️";
+
+  // Convert ISO2 to flag emoji using Unicode regional indicator symbols
+  const codePoints = iso2.toUpperCase().split('').map(char =>
+    0x1F1E6 + char.charCodeAt(0) - 'A'.charCodeAt(0)
+  );
+  return String.fromCodePoint(...codePoints);
+};
+
 type ItiProps = {
   initialValue?: string;
   onChangeNumber?: (number: string) => void;
@@ -41,6 +52,11 @@ export interface IntlTelInputRef {
   isValidNumber: () => boolean;
   isValidNumberPrecise?: () => boolean;
   getValidationError: () => number | null;
+  getExtension: () => string;
+  getNumberType: () => number;
+  setPlaceholderNumberType: (type: string) => void;
+  getInstance: () => Iti | null; // For compatibility with React implementation
+  destroy: () => void; // Cleanup method
 }
 
 const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
@@ -63,10 +79,70 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
   const [isDropdownVisible, setIsDropdownVisible] = useState(false);
   const [filteredCountries, setFilteredCountries] = useState<Country[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [placeholder, setPlaceholder] = useState("");
 
   const textInputRef = useRef<TextInput>(null);
   const itiInstanceRef = useRef<Iti | null>(null);
   const [processedCountries, setProcessedCountries] = useState<Country[]>([]);
+
+  // Get search placeholder from i18n options
+  const getSearchPlaceholder = useCallback(() => {
+    if (itiInstanceRef.current) {
+      const options = itiInstanceRef.current.getOptions();
+      return options.i18n?.searchPlaceholder || "Search countries...";
+    }
+    return "Search countries...";
+  }, []);
+
+  // Update placeholder when country changes
+  const updatePlaceholder = useCallback(() => {
+    if (itiInstanceRef.current) {
+      // Set whether there was an initial placeholder (for polite mode)
+      const hasInitialPlaceholder = Boolean(inputProps?.placeholder);
+      itiInstanceRef.current.setHadInitialPlaceholder(hasInitialPlaceholder);
+
+      // Get the placeholder using the same logic as the main implementation
+      const placeholderText = itiInstanceRef.current.getPlaceholder();
+      setPlaceholder(placeholderText || inputProps?.placeholder || "Phone number");
+    } else {
+      setPlaceholder(inputProps?.placeholder || "Phone number");
+    }
+  }, [inputProps?.placeholder]);
+
+  // Update function similar to React implementation
+  const update = useCallback((): void => {
+    if (itiInstanceRef.current) {
+      const num = itiInstanceRef.current.getNumber() || "";
+      const countryIso = itiInstanceRef.current.getSelectedCountryData().iso2 || "";
+
+      // Update phone number state
+      setPhoneNumber(num);
+      onChangeNumber(num);
+      onChangeCountry(countryIso);
+
+      // Update selected country state
+      if (countryIso) {
+        const country = processedCountries.find(c => c.iso2 === countryIso);
+        if (country) {
+          setSelectedCountry(country);
+        }
+      }
+
+      // Validate the number
+      const isValid = usePreciseValidation
+        ? itiInstanceRef.current.isValidNumberPrecise()
+        : itiInstanceRef.current.isValidNumber();
+
+      if (isValid) {
+        onChangeValidity(true);
+        onChangeErrorCode(null);
+      } else {
+        const errorCode = itiInstanceRef.current.getValidationError();
+        onChangeValidity(false);
+        onChangeErrorCode(errorCode);
+      }
+    }
+  }, [onChangeCountry, onChangeErrorCode, onChangeNumber, onChangeValidity, usePreciseValidation, processedCountries]);
 
   // Initialize Iti instance and get processed countries from it
   useEffect(() => {
@@ -74,19 +150,78 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
       itiInstanceRef.current = new Iti(initOptions);
 
       // Get processed countries from Iti instance
-      setProcessedCountries(itiInstanceRef.current.getCountries());
+      const countries = itiInstanceRef.current.getCountries();
+      setProcessedCountries(countries);
 
-      // Get initial selected country from Iti instance
+      // If there's an initial value, try to detect country from it
+      if (initialValue) {
+        itiInstanceRef.current.setInputValue(initialValue);
+        itiInstanceRef.current.updateCountryFromNumber(initialValue);
+
+        // Apply format-as-you-type to initial value if enabled
+        let formattedValue = initialValue;
+        if (initOptions.formatAsYouType !== false) {
+          formattedValue = itiInstanceRef.current.formatNumberAsYouType();
+        }
+        setPhoneNumber(formattedValue);
+      }
+
+      // Get selected country from Iti instance (after potential country detection)
       const selectedCountryData = itiInstanceRef.current.getSelectedCountryData();
       if (selectedCountryData.iso2) {
-        const country = itiInstanceRef.current.getCountries().find(c => c.iso2 === selectedCountryData.iso2);
+        const country = countries.find(c => c.iso2 === selectedCountryData.iso2);
         if (country) {
           setSelectedCountry(country);
           onChangeCountry(country.iso2);
         }
+      } else {
+        // If no initial country is set, use the first country from the processed list
+        const firstCountry = countries[0];
+        if (firstCountry) {
+          setSelectedCountry(firstCountry);
+          onChangeCountry(firstCountry.iso2);
+          itiInstanceRef.current.setCountry(firstCountry.iso2);
+        }
       }
+
+      // When plugin initialization has finished (e.g. loaded utils script), update all the state values
+      itiInstanceRef.current.promise.then(update).catch(() => {
+        // Handle initialization errors gracefully
+      });
     }
-  }, [initOptions, onChangeCountry]);
+  }, [initOptions, onChangeCountry, initialValue, update]);
+
+  // Update placeholder when selected country changes
+  useEffect(() => {
+    updatePlaceholder();
+  }, [selectedCountry, updatePlaceholder]);
+
+  // Update placeholder when utils are loaded
+  useEffect(() => {
+    if (itiInstanceRef.current) {
+      itiInstanceRef.current.promise.then(() => {
+        updatePlaceholder();
+      }).catch(() => {
+        // Utils failed to load, keep current placeholder
+      });
+    }
+  }, [updatePlaceholder]);
+
+  // Handle disabled state changes (like React implementation)
+  useEffect(() => {
+    // React Native doesn't have a setDisabled method on Iti, but we handle it in the UI
+    // This effect is here for consistency with React implementation patterns
+  }, [disabled]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (itiInstanceRef.current) {
+        itiInstanceRef.current.destroy();
+        itiInstanceRef.current = null;
+      }
+    };
+  }, []);
 
   // Filter countries for search
   useEffect(() => {
@@ -103,42 +238,65 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
     }
   }, [searchQuery, processedCountries]);
 
-  // Handle phone number change
+  // Handle phone number change with format-as-you-type
   const handlePhoneNumberChange = useCallback((text: string) => {
-    setPhoneNumber(text);
-    onChangeNumber(text);
-
-    // Update Iti instance with current input value
     if (itiInstanceRef.current) {
+      // Update Iti instance with current input value
       itiInstanceRef.current.setInputValue(text);
 
-      const isValid = usePreciseValidation
-        ? itiInstanceRef.current.isValidNumberPrecise()
-        : itiInstanceRef.current.isValidNumber();
-      const errorCode = itiInstanceRef.current.getValidationError();
+      // Check if country should be updated from the number
+      const countryChanged = itiInstanceRef.current.updateCountryFromNumber(text);
 
-      onChangeValidity(isValid ?? false);
-      onChangeErrorCode(isValid ? null : errorCode);
+      // Apply format-as-you-type if enabled
+      let formattedText = text;
+      if (initOptions.formatAsYouType !== false) {
+        formattedText = itiInstanceRef.current.formatNumberAsYouType();
+      }
+
+      // Update the phone number state
+      setPhoneNumber(formattedText);
+
+      // If country changed, trigger full update (like React implementation)
+      if (countryChanged) {
+        update();
+      } else {
+        // Just update number and validation
+        onChangeNumber(formattedText);
+
+        const isValid = usePreciseValidation
+          ? itiInstanceRef.current.isValidNumberPrecise()
+          : itiInstanceRef.current.isValidNumber();
+        const errorCode = itiInstanceRef.current.getValidationError();
+
+        onChangeValidity(isValid ?? false);
+        onChangeErrorCode(isValid ? null : errorCode);
+      }
     } else {
-      // Fallback to basic validation
+      // Fallback when no Iti instance
+      setPhoneNumber(text);
+      onChangeNumber(text);
       const isValid = text.length > 0;
       onChangeValidity(isValid);
       onChangeErrorCode(isValid ? null : 0);
     }
-  }, [onChangeNumber, onChangeValidity, onChangeErrorCode, usePreciseValidation]);
+  }, [onChangeNumber, onChangeValidity, onChangeErrorCode, usePreciseValidation, initOptions.formatAsYouType, update]);
 
   // Handle country selection
   const handleCountrySelect = useCallback((country: Country) => {
     setSelectedCountry(country);
     setIsDropdownVisible(false);
     setSearchQuery("");
-    onChangeCountry(country.iso2);
 
     // Update Iti instance with new country
     if (itiInstanceRef.current) {
       itiInstanceRef.current.setCountry(country.iso2);
+      // Trigger update to sync all state (similar to React implementation)
+      update();
+    } else {
+      // Fallback
+      onChangeCountry(country.iso2);
     }
-  }, [onChangeCountry]);
+  }, [onChangeCountry, update]);
 
   // Expose methods via ref
   useImperativeHandle(ref, () => ({
@@ -169,11 +327,16 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
       }
     },
     setNumber: (number: string) => {
-      setPhoneNumber(number);
-      onChangeNumber(number);
-      // Update Iti instance with new number
       if (itiInstanceRef.current) {
-        itiInstanceRef.current.setInputValue(number);
+        // Use the proper setNumber method which handles country detection
+        itiInstanceRef.current.setNumber(number);
+
+        // Trigger full update to sync all state (like React implementation)
+        update();
+      } else {
+        // Fallback
+        setPhoneNumber(number);
+        onChangeNumber(number);
       }
     },
     isValidNumber: () => {
@@ -197,7 +360,34 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
       // Fallback error codes
       return phoneNumber.length > 0 ? null : 0;
     },
-  }), [selectedCountry, phoneNumber, processedCountries, onChangeCountry, onChangeNumber]);
+    getExtension: () => {
+      if (itiInstanceRef.current) {
+        return itiInstanceRef.current.getExtension();
+      }
+      return "";
+    },
+    getNumberType: () => {
+      if (itiInstanceRef.current) {
+        return itiInstanceRef.current.getNumberType();
+      }
+      return -99;
+    },
+    setPlaceholderNumberType: (type: string) => {
+      if (itiInstanceRef.current) {
+        itiInstanceRef.current.setPlaceholderNumberType(type as any);
+        updatePlaceholder();
+      }
+    },
+    getInstance: () => {
+      return itiInstanceRef.current;
+    },
+    destroy: () => {
+      if (itiInstanceRef.current) {
+        itiInstanceRef.current.destroy();
+        itiInstanceRef.current = null;
+      }
+    },
+  }), [selectedCountry, phoneNumber, processedCountries, onChangeCountry, onChangeNumber, updatePlaceholder, update]);
 
   const renderCountryItem = ({ item }: { item: Country }) => (
     <TouchableOpacity
@@ -206,8 +396,7 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
     >
       {(initOptions.showFlags !== false) && (
         <Text style={[styles.flag, flagStyle]}>
-          {/* Flag emoji would go here - simplified for now */}
-          🏳️
+          {getCountryFlag(item.iso2)}
         </Text>
       )}
       <Text style={[styles.countryName, textStyle]}>{item.name}</Text>
@@ -225,7 +414,9 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
             disabled={disabled}
           >
             {(initOptions.showFlags !== false) && selectedCountry && (
-              <Text style={[styles.selectedFlag, flagStyle]}>🏳️</Text>
+              <Text style={[styles.selectedFlag, flagStyle]}>
+                {getCountryFlag(selectedCountry.iso2)}
+              </Text>
             )}
             {initOptions.separateDialCode && selectedCountry && (
               <Text style={[styles.selectedDialCode, textStyle]}>
@@ -241,7 +432,7 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
           style={[styles.textInput, textStyle]}
           value={phoneNumber}
           onChangeText={handlePhoneNumberChange}
-          placeholder="Phone number"
+          placeholder={placeholder || "Phone number"}
           keyboardType="phone-pad"
           editable={!disabled}
           {...inputProps}
@@ -268,7 +459,7 @@ const IntlTelInput = forwardRef<IntlTelInputRef, ItiProps>(({
               style={styles.searchInput}
               value={searchQuery}
               onChangeText={setSearchQuery}
-              placeholder="Search countries..."
+              placeholder={getSearchPlaceholder()}
               autoFocus
             />
           )}
